@@ -308,8 +308,16 @@ def add_tifs_to_mosaic(mosaic_path: str, rows, client_code: str, zone: str,
 
 
 def build_production_overviews(mosaic_path: str) -> bool:
-    """Define missing tiles and build missing/stale production overviews."""
+    """Build production overviews when a mosaic contains raster items."""
     try:
+        item_count = int(arcpy.management.GetCount(mosaic_path).getOutput(0))
+        if item_count == 0:
+            message = "Mosaic dataset has no raster items; no overviews to build"
+            run_report.record("build_production_overviews", "skipped",
+                              output_path=mosaic_path, message=message)
+            log(f"Production overviews skipped for empty mosaic: {mosaic_path}")
+            return True
+
         arcpy.management.BuildOverviews(
             in_mosaic_dataset=mosaic_path,
             define_missing_tiles="DEFINE_MISSING_TILES",
