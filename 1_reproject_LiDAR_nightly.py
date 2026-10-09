@@ -23,7 +23,7 @@ except Exception as error:
 
 # Source paths mirror the inputs to 5_reproject_DEM_v3/v4, expressed as UNC
 # paths so the script also works when launched by Windows Task Scheduler.
-BASE_DIR = Path(r"\\IGG-QNAP12\IGG_Archive\IGG\Z_Drive")
+BASE_DIR = Path(r"\\IGG-QNAP12\IGG_Archive\IGG\Z_Drive\Client")
 CLIENT_FOLDERS = {
 	"CVE": "Cenovus",
 	"TOU": "Tourmaline",

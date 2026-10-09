@@ -22,9 +22,9 @@ except Exception as error:
     run_report.close()
     raise
 
-BASE_DIR = Path(r"\\IGG-QNAP12\IGG_Archive\IGG\Z_Drive")
+BASE_DIR = Path(r"\\IGG-QNAP12\IGG_Archive\IGG\Z_Drive\Client")
 STAGING_GDB = Path(r"\\IGG-QNAP12\IGG_Archive\IGG\Z_Drive\Staging\LiDAR_Staging.gdb")
-PRODUCTION_GDB = Path(r"\\IGG-QNAP12\IGG_Archive\IGG\Z_Drive\LiDAR_Mosaics.gdb")
+PRODUCTION_GDB = Path(r"\\IGG-QNAP12\IGG_Archive\IGG\Z_Drive\Geodatabase\LiDAR_Mosaics.gdb")
 REPORT_CSV = Path(r"\\IGG-QNAP12\IGG_Archive\IGG\Z_Drive\Staging\LiDAR_Reports\2_DEM_mosaic_add_report.csv")
 CLIENT_FOLDERS = {"CVE": "Cenovus", "TOU": "Tourmaline", "WCP": "Whitecap"}
 SOURCE_SUBDIRECTORY = Path("LiDAR") / "Aerial" / "BareEarth"
@@ -152,21 +152,21 @@ def preflight_geodatabase(gdb: Path, grouped) -> None:
         if not arcpy.Exists(catalog):
             raise FileNotFoundError(f"Footprint catalog is missing: {catalog}")
         fields = {field.name.casefold(): field for field in arcpy.ListFields(catalog)}
-        missing = {"productname", "groupname"} - fields.keys()
+        missing = {"path", "folderpath"} - fields.keys()
         if missing:
             raise ValueError(f"{catalog} is missing fields: {sorted(missing)}")
 
         input_rows = grouped.get((client_code, client_folder, zone), ())
         product_length = max((len(str(path)) for _, path in input_rows), default=0)
         group_length = max((len(str(path.parent)) for _, path in input_rows), default=0)
-        if fields["productname"].length < product_length:
+        if fields["path"].length < product_length:
             raise ValueError(
-                f"{catalog} ProductName length {fields['productname'].length} is too short; "
+                f"{catalog} Path length {fields['path'].length} is too short; "
                 f"current input paths need {product_length} characters (use 255)"
             )
-        if fields["groupname"].length < group_length:
+        if fields["folderpath"].length < group_length:
             raise ValueError(
-                f"{catalog} GroupName length {fields['groupname'].length} is too short; "
+                f"{catalog} FolderPath length {fields['folderpath'].length} is too short; "
                 f"current parent paths need {group_length} characters"
             )
     log(f"Preflight passed for all nine mosaics in {gdb}")
@@ -197,6 +197,62 @@ def mosaic_item_paths(mosaic_path: str) -> dict[int, str]:
     finally:
         if arcpy.Exists(table):
             arcpy.management.Delete(table)
+
+
+def ensure_cell_size_ranges(mosaic_path: str) -> bool:
+    """Calculate MinPS/MaxPS for mosaic items where either value is missing."""
+    catalog = str(Path(mosaic_path).parent / f"AMD_{Path(mosaic_path).name}_CAT")
+    try:
+        fields = {field.name.casefold(): field.name for field in arcpy.ListFields(catalog)}
+        min_field = fields.get("minps")
+        max_field = fields.get("maxps")
+        if not min_field or not max_field:
+            raise RuntimeError(f"Footprint catalog is missing MinPS/MaxPS fields: {catalog}")
+
+        with arcpy.da.SearchCursor(catalog, [min_field, max_field]) as cursor:
+            missing_count = sum(
+                1 for min_size, max_size in cursor
+                if min_size is None or max_size is None
+            )
+
+        if missing_count == 0:
+            run_report.record(
+                "calculate_cell_size_ranges", "skipped", output_path=mosaic_path,
+                message="All mosaic items already have MinPS/MaxPS values",
+            )
+            return True
+
+        log(f"Calculating missing cell-size ranges for {missing_count} item(s): {mosaic_path}")
+        arcpy.management.CalculateCellSizeRanges(
+            in_mosaic_dataset=mosaic_path,
+            do_compute_min="MIN_CELL_SIZES",
+            do_compute_max="MAX_CELL_SIZES",
+            update_missing_only="UPDATE_MISSING_ONLY",
+        )
+
+        with arcpy.da.SearchCursor(catalog, [min_field, max_field]) as cursor:
+            remaining_count = sum(
+                1 for min_size, max_size in cursor
+                if min_size is None or max_size is None
+            )
+        if remaining_count:
+            raise RuntimeError(
+                f"Cell-size calculation left {remaining_count} item(s) without MinPS/MaxPS"
+            )
+
+        run_report.record(
+            "calculate_cell_size_ranges", "completed", output_path=mosaic_path,
+            message=f"Calculated missing MinPS/MaxPS values for {missing_count} item(s)",
+        )
+        log(f"Cell-size ranges populated for {missing_count} item(s): {mosaic_path}")
+        return True
+    except Exception as error:
+        run_report.exception(
+            "calculate_cell_size_ranges", error, output_path=mosaic_path,
+            details=arcpy.GetMessages(2),
+        )
+        log(f"Cell-size range calculation failed for {mosaic_path}: {error}")
+        return False
 
 
 def add_tifs_to_mosaic(mosaic_path: str, rows, client_code: str, zone: str,
@@ -285,7 +341,7 @@ def add_tifs_to_mosaic(mosaic_path: str, rows, client_code: str, zone: str,
         catalog = str(Path(mosaic_path).parent / f"AMD_{Path(mosaic_path).name}_CAT")
         oid_field = arcpy.Describe(catalog).OIDFieldName
         updated = 0
-        with arcpy.da.UpdateCursor(catalog, [oid_field, "ProductName", "GroupName"]) as cursor:
+        with arcpy.da.UpdateCursor(catalog, [oid_field, "Path", "FolderPath"]) as cursor:
             for row in cursor:
                 source = item_paths.get(row[0])
                 if source is None:
@@ -296,7 +352,7 @@ def add_tifs_to_mosaic(mosaic_path: str, rows, client_code: str, zone: str,
                     cursor.updateRow(row)
                     updated += 1
         run_report.record("update_catalog_attributes", "completed", output_path=catalog,
-                          message=f"Updated {updated} ProductName/GroupName row(s)")
+                          message=f"Updated {updated} Path/FolderPath row(s)")
         log(f"Updated attributes on {updated} rows: {catalog}")
     except Exception as error:
         failed_count += 1
@@ -373,6 +429,7 @@ def main() -> int:
                     run_report.record("discover_mosaic_inputs", "info", client=client_folder,
                                       data_type="DEM", output_path=mosaic_path,
                                       message=f"No inputs for UTM zone {zone}")
+                total_failed += int(not ensure_cell_size_ranges(mosaic_path))
             if label == "production":
                 log("Building production overviews for all nine DEM mosaics")
                 for _, _, _, _, name in expected_mosaics():

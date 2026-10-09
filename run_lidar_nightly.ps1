@@ -17,6 +17,8 @@ $pipeline = @(
 )
 $reportRoot = '\\IGG-QNAP12\IGG_Archive\IGG\Z_Drive\Staging\LiDAR_Reports'
 $dataRoot = '\\IGG-QNAP12\IGG_Archive\IGG\Z_Drive'
+$clientRoot = Join-Path $dataRoot 'Client'
+$geodatabaseRoot = Join-Path $dataRoot 'Geodatabase'
 $runStamp = Get-Date -Format 'yyyyMMdd_HHmmss'
 $transcriptPath = Join-Path $reportRoot "lidar_nightly_scheduler_$runStamp.log"
 
@@ -38,6 +40,11 @@ try {
 
     if (-not (Test-Path -LiteralPath $dataRoot -PathType Container)) {
         throw "UNC data share is unavailable to this account: $dataRoot"
+    }
+    foreach ($requiredRoot in @($clientRoot, $geodatabaseRoot)) {
+        if (-not (Test-Path -LiteralPath $requiredRoot -PathType Container)) {
+            throw "Required migrated data folder is unavailable: $requiredRoot"
+        }
     }
 
     Set-Location -LiteralPath $scriptRoot
